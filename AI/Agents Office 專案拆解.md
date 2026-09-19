@@ -1,0 +1,217 @@
+# Agents Office 專案拆解
+
+更新日期：2026-09-19  
+專案：[ajsahni/agents-office](https://github.com/ajsahni/agents-office)  
+研究版本：`3.2.1-beta.1`（repository 於研究當下的版本）
+
+## 一句話判斷
+
+Agents Office 表面上是一座 3D AI 辦公室，真正的產品價值卻是把看不見的 agent 工作流程，轉成使用者能理解、監督和修正的「組織營運介面」。最值得參考的是任務狀態、權限、知識、學習與協作如何被具象化，而不是照抄辦公室造型。
+
+## 從展示畫面看到什麼
+
+使用者提供的畫面是一個經過客製化的實例，標題為 `Blackwood Workforce`，可看到：
+
+- 不同部門被畫成獨立工作島，例如 Talent Marketing、Candidate Hub、Placements & Temps、Compliance、Client Desk、Pay & Bill。
+- 每個島同時呈現 agent 數量、任務量及目前狀態。
+- 中央的 Brain 將各部門連在一起，暗示共用知識庫，而不是彼此完全隔離的聊天機器人。
+- 左側是所選部門／主管及對話，右側是跨部門 Task Status；空間視圖負責「現在誰在做什麼」。
+- agent 站起、移動、交件等動畫其實是一種狀態提示，讓背景工作不像黑箱。
+
+這個客製化招募公司版本也說明：同一套固定空間可以換名稱、職責、工具和資料，包裝成特定產業的「AI 公司」。
+
+## 使用流程
+
+```text
+使用者輸入任務
+    ↓
+指定部門，LLM 從部門內挑選 agent
+    ↓
+從 Brain 選出相關 Markdown 筆記
+    ↓
+組合角色、brief、skill、歷史修正和工具權限
+    ↓
+啟動一個獨立 Claude CLI 工作程序
+    ↓
+更新任務狀態、顯示 agent 活動與工具使用
+    ↓
+需要外部動作時等待人工核准
+    ↓
+成果寫回 Brain，成為可追蹤的 Markdown 筆記
+```
+
+若選擇 Team 模式，部門主管會先把工作拆成 2–4 個可平行的小任務，分別啟動 Claude session；全部完成後再由主管合併成最終交付物。
+
+## 技術架構
+
+### 前端
+
+- 原生 JavaScript 加 Three.js，呈現等角視角 3D 場景。
+- D3 Force 用於 Brain 的筆記關聯圖。
+- esbuild 將畫面打包成一個大型 HTML；離線開啟時有 demo mode。
+- 工作狀態主要透過 HTTP API 輪詢，任務頁約每 6 秒更新，並非 WebSocket 即時串流。
+
+### 後端
+
+- Node.js 20+ 的單一 HTTP server，沒有大型 Web framework。
+- 預設透過本機 Claude Code CLI 的 `claude -p` 執行；也可使用 Anthropic SDK，但 SDK 模式沒有工具能力。
+- 一個 agent 工作對應一個 child process；Team 模式同時執行多個 process，再增加一次主管整合呼叫。
+- MCP connector 來自本機 `claude mcp list`；可依部門限制 connector。
+- 明確禁用 Bash、檔案讀寫、搜尋與 sub-agent 工具，agent 只取得允許的 MCP、網頁及瀏覽器工具。
+
+### 儲存
+
+- `data/tasks.json`：任務與執行狀態。
+- Brain：使用者指定的 Markdown 資料夾，也可直接指向 Obsidian vault。
+- 完成結果：寫成附有 agent、部門、工具、模型及讀取來源等 metadata 的 Markdown。
+- `feedback/<agent>.md`：從修改意見抽出的長期規則與單次修正。
+- `skills/<name>/SKILL.md`：流程、格式、規則、範本與適用 agent。
+- `routines.json`：排程工作；執行狀態另存，避免污染使用者設定。
+
+### 固定與可變部分
+
+- 固定：六個部門、35 個座位、主管位置及主要空間結構。
+- 可變：公司名稱、Brain 路徑、agent 名稱、角色、工作內容、brief、模型、工具、skills。
+- 這使客製化容易，但若實際團隊結構不是六部門，就需要修改程式而非只調設定。
+
+## 最值得參考的設計
+
+### 1. 將 agent 的狀態變成可掃讀的空間
+
+空間不是裝飾，而是資訊架構：部門是 context boundary、座位是責任歸屬、中央 Brain 是共同記憶、走動與揮手表示狀態。使用者不用讀 log 就能知道哪裡忙碌、哪裡卡住。
+
+可抽象成更簡單的 UI，不一定需要 3D：
+
+- agent 卡片：idle / queued / working / waiting / done / failed。
+- 清楚顯示目前讀了哪些資料、用了哪些工具。
+- 需要人工決策時，讓 agent 主動「舉手」。
+- 點擊 agent 後看到任務、上下文、輸出及修改歷史。
+
+### 2. Brain 不只是 RAG，而是可檢查的工作記錄
+
+每份結果都寫回 Markdown，並列出讀過的筆記與使用過的工具。這讓知識庫同時是輸入、輸出、稽核紀錄和組織記憶。資料屬於使用者，也能用 Obsidian、Git 或文字編輯器直接處理。
+
+### 3. 把「職位」與「做事方法」分開
+
+- Role／does：這個 agent 負責什麼。
+- Brief：長期語氣、禁區與升級條件。
+- Skill：特定工作的 SOP、輸出格式、規則與範例。
+- Feedback：實際工作中學到的修正。
+
+這種分層比一份超長 system prompt 更容易維護，也能清楚知道應修改哪一層。
+
+### 4. 外部動作採兩階段核准
+
+只讀型工作可以自動完成；涉及寄送、發布、付款、刪除或修改外部系統時，先產生草稿並進入 `WAITING ON APPROVAL`，核准後才執行。這是 agent 產品很重要的信任介面。
+
+### 5. 修正會累積，但仍保持透明
+
+使用者用 `revise:` 提出修正，系統判斷它是本次限定或長期規則，再寫進可編輯的 Markdown。使用者可查看、修改或刪除，而不是讓「記憶」藏在不可見的模型狀態。
+
+### 6. 平行化必須有主管整合
+
+Team 模式不是多開幾個 chat：主管先拆出可獨立工作的部分，每個人看到自己的責任與別人的題目，最後再由主管合併。這比直接把同一問題丟給多個模型更接近可靠的工作分工。
+
+## 不宜直接照搬的地方
+
+### 1. 35 個 agent 容易製造角色膨脹
+
+很多工作其實只需要 3–5 種能力。固定 35 個座位視覺效果強，但可能增加選擇、維護、prompt 與模型路由成本。應由真實重複流程反推 agent，而不是先創造一間大公司。
+
+### 2. 每次路由也是一次模型呼叫
+
+即使任務已指定部門，系統仍用 Sonnet 選 agent、命名、列計畫及判斷是否需核准。簡單任務可先用規則或 embedding 分流，低信心時才交給 LLM。
+
+### 3. Team 模式成本高且可能重複
+
+一次 Team 任務包含規劃、多位 agent 執行和主管整合，至少數次模型呼叫。只適合真正可並行、需要多個視角的工作，不適合線性或很小的任務。
+
+### 4. 關鍵判斷仍部分依賴模型
+
+是否需要核准主要由路由模型輸出 `needs_ok`，另有文字規則作 fallback。更安全的設計應根據實際 tool action 分級，讓高風險工具在執行層強制攔截，而不只靠 prompt 判斷。
+
+### 5. 本機檔案儲存適合個人，未必適合多人
+
+JSON 同步寫入、單一 server、輪詢 UI 與本機 child process 都很適合 prototype；若多人共同使用，需要處理資料庫交易、身份權限、任務佇列、重試、鎖與即時事件。
+
+### 6. 授權限制
+
+專案採 **PolyForm Noncommercial 1.0.0**。可用於個人研究、實驗與非商業用途，但不能直接拿去販售、轉售或做成付費產品。可以研究它的產品概念與一般設計模式；若要商業化，應自行重新實作並另外確認法律界線。
+
+## 可以衍生的點子
+
+### A. Idea Garden：點子不是員工，而是會成長的植物
+
+把這個 repository 視覺化成一座花園：
+
+- 新點子是種子。
+- 完成第一次研究後發芽。
+- 補上使用者、問題與方案後長葉。
+- 做出 prototype 後開花。
+- 長期沒有活動的點子進入休眠，而不是被當作失敗。
+
+agent 可以是園丁：研究員、反方、產品設計師、實作者，各自對點子留下可追蹤的養分。
+
+### B. Idea Workshop：從收件匣到實驗的生產線
+
+不用模擬一整間公司，只設五個工作站：
+
+1. Inbox：捕捉原始點子。
+2. Research：補資料與既有方案。
+3. Challenge：找風險、反例與假設。
+4. Shape：整理成使用情境和最小實驗。
+5. Build：形成 prototype 任務。
+
+視覺化重點是每個點子卡在哪一站、下一個決策是什麼，而不是有多少 agent。
+
+### C. Personal Council：小型多視角顧問團
+
+只保留四個角色：Explorer、Skeptic、Maker、Editor。需要深入研究時才並行工作，最後由 Editor 合併，成果直接寫回 GitHub。這能保留 Agents Office 的平行協作優點，同時避免 35 個 agent 的複雜度。
+
+### D. Approval Inbox：專門管理 AI 等待人類的決策
+
+建立一個跨工具的統一待核准清單：每張卡都顯示「將要做什麼、對誰、會改變什麼、能否復原、依據哪些資料」。它可以獨立於 3D UI，實用價值甚至可能高於整個虛擬辦公室。
+
+### E. Decision Trace：把成果來源畫成路徑
+
+每份輸出都保留：使用者原始要求 → 路由原因 → 讀取筆記 → 使用工具 → agent 草稿 → 人工修正 → 最終結果。這能讓 agent 的工作變得可解釋，也適合日後比較哪些流程真正有效。
+
+## 建議我們採用的最小版本
+
+先不要做 3D 辦公室，也不要建立大量角色。可先在 idea repository 上建立：
+
+```text
+Inbox → Researched → Challenged → Experiment → Archived
+```
+
+每個點子是一份 Markdown，front matter 包含：
+
+- `status`
+- `category`
+- `created`
+- `updated`
+- `next_action`
+- `agents_used`
+- `sources`
+- `decision_log`
+
+第一階段只需要一個簡單 dashboard，能看到所有點子的階段、最近更新、下一步與卡點。等真的出現多個同時執行的背景 agent，再加入動態角色或 3D 空間；這樣視覺化會反映真實工作，而非先做出漂亮但空洞的場景。
+
+## 最終評價
+
+Agents Office 最強的不是 AI 技術創新，而是把 agent orchestration 做成一套具有人類組織隱喻的產品介面。它證明了三件事：
+
+1. 使用者需要看到 agent 的責任與狀態，不只看到聊天訊息。
+2. 個人檔案可以同時充當知識庫、記憶與稽核軌跡。
+3. 自動化越強，人工核准、修正記憶與工具透明度越重要。
+
+對我們而言，最值得採用的是「點子狀態＋可見的下一步＋研究來源＋決策軌跡」，而不是複製 35 人的 3D 辦公室。
+
+## 主要來源
+
+- [Agents Office README](https://github.com/ajsahni/agents-office)
+- [原始碼目錄](https://github.com/ajsahni/agents-office/tree/main/src)
+- [Server implementation](https://github.com/ajsahni/agents-office/blob/main/serve.mjs)
+- [Agent teams implementation](https://github.com/ajsahni/agents-office/blob/main/teams.mjs)
+- [License](https://github.com/ajsahni/agents-office/blob/main/LICENSE)
+
